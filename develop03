@@ -1,0 +1,254 @@
+#!/bin/bash
+
+# Remote Roborock:
+#--------------------------------------------------------------------#
+
+export MIROBO_IP=192.168.8.1
+export MIROBO_TOKEN=6a6d7a446a33527461475243774d6476
+
+pos_x=0
+pos_y=0
+
+start_pos=$( sed '1q;d' Botcord01.txt )
+
+point_count=1
+
+n_start=1
+n_end=$(awk 'END {print NR}' Botcord01.txt)
+echo $n_end
+
+
+# Declare Status-Variables:
+#--------------------------------------------------------------------#
+
+general_status="start"
+battery_status=100
+akku_tresh=98
+akku_up=100
+
+status_tick=1
+move_tick=30
+
+# Declare Measure-Variables:
+#--------------------------------------------------------------------#
+
+ip_target=192.168.88.3
+
+pull_tick=1
+mess_tick=6
+
+compare_string="yes"
+
+echo $compare_string
+
+
+# Allocate Files:
+#--------------------------------------------------------------------#
+
+>channelinfo_raw.txt
+>current_channel.txt
+>channelsector.txt
+>channelrssi.txt
+>channeldistance.txt
+>mirobo_status.txt
+
+
+# Functions:
+#--------------------------------------------------------------------#
+#--------------------------------------------------------------------#
+
+move () {
+
+	mirobo goto $pos_x $pos_y
+
+	for (( k=0; k<=$move_tick; k++ ))
+	do
+
+		sleep $status_tick
+		statuscheck
+		echo $general_status
+
+		if [[ "$general_status" == "idle" ]]; then
+
+			echo $general_status
+			mess
+			break
+
+		else
+			continue
+
+		fi
+
+	done
+
+}
+
+#--------------------------------------------------------------------#
+
+mess () {
+
+        echo start_mess
+        # Disconnect:
+        ssh admin@$ip_target interface w60g disable wlan60-1
+        echo disconnected
+        sleep 1
+        # Reconnect:
+        ssh admin@$ip_target interface w60g enable wlan60-1
+
+        for (( i=0; i<=$mess_tick; i++ ))
+        do
+
+        	sleep $pull_tick
+		ssh admin@$ip_target interface w60g monitor wlan60-1 once > current_channel.txt
+		connection_status=$(sed -n 1p current_channel.txt)
+		echo $connection_status
+
+                        if [[ "${connection_status}" =~ "yes" ]]; then
+
+                                echo connected
+				sleep $pull_tick
+
+                                sed 's/[^0-9]//g;8q;d' current_channel.txt >> channelsector.txt
+                                sed 's/[^0-9]//g;7q;d' current_channel.txt >> channelrssi.txt
+                                sed 's/[^0-9]//g;10q;d' current_channel.txt >> channeldistance.txt
+
+                                echo -e "\n" >>  channelinfo_raw.txt
+                                ssh admin@$ip_target interface w60g monitor wlan60-1 once >> channelinfo_raw.txt
+				break
+
+                        else
+                                echo disconnected
+                                continue
+                        fi
+
+        done
+
+        echo end_mess
+
+}
+
+#--------------------------------------------------------------------#
+
+load_akku () {
+
+	pos_x=$(awk -v var="1" '$1==var {print $2}' Botcord01.txt)
+        pos_y=$(awk -v var="1" '$1==var {print $3}' Botcord01.txt)
+	move
+
+	mirobo home
+	
+	echo start charging
+	
+        while true
+        do
+
+                sleep 60
+                statuscheck
+                echo $general_status
+
+                if (( $battery_status >= $akku_up )); then
+
+                        echo $general_status
+                        break
+
+                else
+                        continue
+
+                fi
+
+        done
+
+	sleep 10
+	
+	echo charging done
+
+}
+
+#--------------------------------------------------------------------#
+
+>mirobo_status.txt
+
+statuscheck () {
+
+        mirobo > mirobo_status.txt
+
+        check_status=$( sed -n 1p mirobo_status.txt )
+
+        if [[ "${check_status}" =~ "Charging" ]]; then
+
+                general_status="charging"
+
+                elif [[ "${check_status}" =~ "Going" ]]; then
+
+                general_status="moving"
+
+                elif [[ "${check_status}" =~ "Idle" ]]; then
+
+                general_status="idle"
+
+                else
+
+                general_status="error"
+
+        fi
+
+        echo $general_status
+
+        battery_status=$( sed 's/[^0-9]//g;2q;d' mirobo_status.txt )
+
+        echo $battery_status
+
+}
+
+#--------------------------------------------------------------------#
+
+measure () {
+
+	for (( j=$n_start; j<=$n_end; j++ ))
+	do
+        	echo $j
+		pos_x=$(awk -v var="$j" '$1==var {print $2}' Botcord01.txt)
+		pos_y=$(awk -v var="$j" '$1==var {print $3}' Botcord01.txt)
+		echo $pos_x
+		echo $pos_y
+		move
+		point_count=$(( $point_count+1 ))
+		
+		if (( $battery_status <= $akku_tresh )); then
+
+        		n_start=$(( $j+1 ))
+        		echo $n_start
+			break
+
+        	else
+        		continue
+
+        	fi
+
+	done
+
+}
+
+#--------------------------------------------------------------------#
+# Exe-Loop 
+#--------------------------------------------------------------------#
+
+	while true
+	do
+        	echo start
+		measure
+        	load_akku
+		echo $point_count
+		echo $n_end
+
+        	if (( $point_count >= $n_end )); then
+
+        	echo stop 
+        	break
+
+        else
+        continue
+
+	fi
+
+done
